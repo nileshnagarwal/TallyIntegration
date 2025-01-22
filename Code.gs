@@ -9,8 +9,8 @@
 function onOpen() {
     SpreadsheetApp.getUi()
       .createMenu("Tally Integration")
-      .addItem("Generate Ledger & Purchase XML...", "promptUserForChallanRange")
-      .addItem("Verify Ledgers...", "verifyLedgers")
+      .addItem("Generate Ledger & Purchase XML...", "promptForChallanRange")
+      .addItem("Verify Ledgers...", "verifyLedgersOnly")
       .addToUi();
   }
   
@@ -20,23 +20,73 @@ function onOpen() {
    *  1) Ledger Creation (for any missing ledgers)
    *  2) Purchase Entries (for all challans in the range)
    */
-  function promptUserForChallanRange() {
-    var ui = SpreadsheetApp.getUi();
-    var response = ui.prompt(
+  function promptForChallanRange() {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.prompt(
       "Generate Tally XML",
-      'Enter row range in "Challans" sheet (e.g. "2-10"):',
+      'Enter range of Challan numbers (e.g. "75-76"):',
       ui.ButtonSet.OK_CANCEL
     );
   
     if (response.getSelectedButton() == ui.Button.OK) {
-      var rangeStr = response.getResponseText();
-      var parts = rangeStr.split("-");
-      if (parts.length === 2) {
-        var startRow = parseInt(parts[0], 10);
-        var endRow = parseInt(parts[1], 10);
-        generateTallyXml(startRow, endRow);
-      } else {
-        ui.alert('Invalid range. Please enter something like "2-10".');
+      try {
+        const range = response.getResponseText();
+        const [startChallan, endChallan] = range.split("-").map(Number);
+        
+        if (!startChallan || !endChallan || startChallan > endChallan) {
+          ui.alert('Error', 'Invalid range. Please enter something like "75-76".', ui.ButtonSet.OK);
+          return;
+        }
+  
+        // Get challan data for the specified range
+        const challanData = getChallanDataForRange(range);
+        
+        // Get unique transporters for the specified range
+        const transporters = getTransportersInRange(range);
+        
+        // Verify ledgers and get missing ones
+        const missingLedgers = verifyLedgers(transporters);
+        
+        // Generate purchase XML
+        const purchaseXml = generatePurchaseXml(challanData);
+        const purchaseFile = DriveApp.createFile('purchase.xml', purchaseXml, 'application/xml');
+        
+        // If there are missing ledgers, create ledger XML and show comprehensive message
+        if (Object.keys(missingLedgers).length > 0) {
+          // Create ledger creation XML
+          const ledgerXml = createLedgerXML(missingLedgers);
+          const ledgerFile = DriveApp.createFile('ledger_creation.xml', ledgerXml, 'application/xml');
+          
+          // Create message listing missing ledgers
+          let missingLedgersList = '';
+          Object.entries(missingLedgers).forEach(([transporter, ledgers]) => {
+            missingLedgersList += `\n${transporter}: ${ledgers.join(', ')}`;
+          });
+          
+          // Show comprehensive message to user
+          const message = "Two XML files have been created:\n\n" +
+            "1. Ledger Creation XML: " + ledgerFile.getUrl() + "\n" +
+            "2. Purchase Voucher XML: " + purchaseFile.getUrl() + "\n\n" +
+            "Missing ledgers:" + missingLedgersList + "\n\n" +
+            "Please follow these steps:\n" +
+            "1. First, import the ledger creation XML in Tally\n" +
+            "2. Update the 'Ledgers' sheet with the newly created ledgers\n" +
+            "3. Run 'Verify Ledgers' function to confirm all ledgers exist\n" +
+            "4. Once verified, import the purchase voucher XML";
+          
+          ui.alert("XML Generation Complete", message, ui.ButtonSet.OK);
+        } else {
+          // If no missing ledgers, show simple success message
+          ui.alert("XML Generation Complete", 
+                  "Purchase XML file created successfully!\n\n" + purchaseFile.getUrl(), 
+                  ui.ButtonSet.OK);
+        }
+      } catch (error) {
+        // Show error message to user
+        ui.alert('Error', 
+                'Could not generate XML files:\n\n' + error.message, 
+                ui.ButtonSet.OK);
+        return;
       }
     }
   }
@@ -74,7 +124,7 @@ function onOpen() {
       // row[2] might be date or something else. Adjust accordingly.
       obj.challanDate = row[2];           // Column C (Challan Date)
       obj.transporterName = row[4];       // Column E (Transporter Name)
-      obj.comments = row[27];             // Column AB (Comments) (if that’s your 28th column)
+      obj.comments = row[27];             // Column AB (Comments) (if that's your 28th column)
       obj.totalChallanAmt = row[25];      // Column Z? (Total Challan Amount)
       // ... and so on, capturing the fields you need.
   
@@ -297,30 +347,28 @@ function onOpen() {
    *  - Optionally run AFTER user imports ledger XML & updates the "Ledgers" sheet
    *  - It checks a user-specified challan range and ensures all transporters exist
    ****************************************************/
-  function verifyLedgers() {
-    var ui = SpreadsheetApp.getUi();
-    var response = ui.prompt(
+  function verifyLedgersOnly() {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.prompt(
       "Verify Ledgers",
-      'Enter row range in "Challans" sheet (e.g. "2-10") to verify ledger existence:',
+      'Enter range of Challan numbers (e.g. "75-76"):',
       ui.ButtonSet.OK_CANCEL
     );
-  
-    if (response.getSelectedButton() == ui.Button.OK) {
-      var rangeStr = response.getResponseText();
-      var parts = rangeStr.split("-");
-      if (parts.length === 2) {
-        var startRow = parseInt(parts[0], 10);
-        var endRow = parseInt(parts[1], 10);
-        var missing = checkMissingLedgersInRange(startRow, endRow);
-        if (missing.length === 0) {
-          ui.alert("Success", "All transporters in this range are present in Ledgers!", ui.ButtonSet.OK);
-        } else {
-          ui.alert("Missing Ledgers", 
-                   "The following ledgers are still missing:\n" + missing.join(", "), 
-                   ui.ButtonSet.OK);
-        }
+    
+    if (response.getSelectedButton() === ui.Button.OK) {
+      const range = response.getResponseText();
+      const transporters = getTransportersInRange(range);
+      const missingLedgers = verifyLedgers(transporters);
+      
+      if (Object.keys(missingLedgers).length > 0) {
+        let message = "The following ledgers are still missing:\n\n";
+        Object.entries(missingLedgers).forEach(([transporter, ledgers]) => {
+          message += `${transporter}: ${ledgers.join(', ')}\n`;
+        });
+        message += "\nPlease create these ledgers in Tally and update the 'Ledgers' sheet before importing the purchase voucher XML.";
+        ui.alert("Missing Ledgers", message, ui.ButtonSet.OK);
       } else {
-        ui.alert('Invalid range. Please enter something like "2-10".');
+        ui.alert("Success", "All required ledgers exist! You can now proceed with importing the purchase voucher XML.", ui.ButtonSet.OK);
       }
     }
   }
@@ -374,8 +422,7 @@ function onOpen() {
    ****************************************************/
   
   /**
-   * Format date as Tally expects (YYYYMMDD) – similar to your Python code.
-   * If the cell is not a valid date, we default to an empty string.
+   * Format date as Tally expects (YYYYMMDD)
    */
   function formatTallyDate(dateValue) {
     // If dateValue is not a valid Date object, try converting
@@ -402,5 +449,231 @@ function onOpen() {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&apos;");
+  }
+  
+  function getTransportersInRange(range) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Challans");
+    if (!sheet) {
+      throw new Error("'Challans' sheet not found in the spreadsheet");
+    }
+  
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    const transporterIndex = headers.indexOf('Transporter Name');
+    const challanNoIndex = headers.indexOf('Challan No');
+    
+    if (transporterIndex === -1 || challanNoIndex === -1) {
+      throw new Error("Required columns 'Transporter Name' or 'Challan No' not found");
+    }
+  
+    const [startChallan, endChallan] = range.split('-').map(Number);
+    
+    // Get unique transporters in the range
+    const transporters = new Set();
+    data.slice(1).forEach(row => {
+      const challanNo = Number(row[challanNoIndex]);
+      if (challanNo >= startChallan && challanNo <= endChallan) {
+        const transporter = row[transporterIndex];
+        if (transporter && transporter !== "Nimbus Logistics") {
+          transporters.add(transporter.trim());
+        }
+      }
+    });
+    
+    return Array.from(transporters);
+  }
+  
+  function verifyLedgers(transporters) {
+    // Get the Ledgers sheet
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ledgerSheet = ss.getSheetByName('Ledgers');
+    if (!ledgerSheet) {
+      throw new Error("'Ledgers' sheet not found in the spreadsheet");
+    }
+    
+    // Get all ledger names from the first column
+    const ledgers = ledgerSheet.getRange(1, 1, ledgerSheet.getLastRow(), 1)
+      .getValues()
+      .map(row => row[0].toString().trim());
+    
+    // Object to store missing ledgers for each transporter
+    const missingLedgers = {};
+    
+    // Check each transporter's ledgers
+    transporters.forEach(transporter => {
+      if (transporter === "Nimbus Logistics") return; // Skip Nimbus Logistics
+      
+      const requiredLedgers = [
+        `${transporter} LH Payable`,
+        `${transporter} LH Acc`
+      ];
+      
+      const missing = requiredLedgers.filter(ledger => !ledgers.includes(ledger));
+      if (missing.length > 0) {
+        missingLedgers[transporter] = missing;
+      }
+    });
+    
+    return missingLedgers;
+  }
+  
+  function createLedgerXML(missingLedgers) {
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<ENVELOPE>\n';
+    xml += '\t<HEADER>\n';
+    xml += '\t\t<TALLYREQUEST>Import Data</TALLYREQUEST>\n';
+    xml += '\t</HEADER>\n';
+    xml += '\t<BODY>\n';
+    xml += '\t\t<IMPORTDATA>\n';
+    xml += '\t\t\t<REQUESTDESC>\n';
+    xml += '\t\t\t\t<REPORTNAME>All Masters</REPORTNAME>\n';
+    xml += '\t\t\t\t<STATICVARIABLES>\n';
+    xml += '\t\t\t\t\t<SVCURRENTCOMPANY>Nimbus Logistics 2020-21</SVCURRENTCOMPANY>\n';
+    xml += '\t\t\t\t</STATICVARIABLES>\n';
+    xml += '\t\t\t</REQUESTDESC>\n';
+    xml += '\t\t\t<REQUESTDATA>\n';
+    
+    // Create ledger entries for each missing ledger
+    Object.entries(missingLedgers).forEach(([transporter, ledgers]) => {
+      ledgers.forEach(ledgerName => {
+        xml += '\t\t\t\t<TALLYMESSAGE xmlns:UDF="TallyUDF">\n';
+        xml += '\t\t\t\t\t<LEDGER NAME="' + escXml(ledgerName) + '">\n';
+        xml += '\t\t\t\t\t\t<PARENT>Lorry Hire Payable</PARENT>\n';
+        xml += '\t\t\t\t\t\t<ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>\n';
+        xml += '\t\t\t\t\t\t<OPENINGBALANCE>0</OPENINGBALANCE>\n';
+        xml += '\t\t\t\t\t\t<LANGUAGENAME.LIST>\n';
+        xml += '\t\t\t\t\t\t\t<NAME.LIST TYPE="String">\n';
+        xml += '\t\t\t\t\t\t\t\t<NAME>' + escXml(ledgerName) + '</NAME>\n';
+        xml += '\t\t\t\t\t\t\t</NAME.LIST>\n';
+        xml += '\t\t\t\t\t\t\t<LANGUAGEID>1033</LANGUAGEID>\n';
+        xml += '\t\t\t\t\t\t</LANGUAGENAME.LIST>\n';
+        xml += '\t\t\t\t\t</LEDGER>\n';
+        xml += '\t\t\t\t</TALLYMESSAGE>\n';
+      });
+    });
+    
+    xml += '\t\t\t</REQUESTDATA>\n';
+    xml += '\t\t</IMPORTDATA>\n';
+    xml += '\t</BODY>\n';
+    xml += '</ENVELOPE>';
+    
+    return xml;
+  }
+  
+  function getChallanDataForRange(range) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Challans");
+    if (!sheet) {
+        throw new Error("'Challans' sheet not found!");
+    }
+
+    const data = sheet.getDataRange().getValues();
+    const headers = data[0];
+    
+    // Define required fields (excluding Comments)
+    const requiredFields = [
+        'Challan No',
+        'Invoice Number',
+        'Challan Date',
+        'Transporter Name',
+        'Total Challan Amount (Not Incl TDS Non Deductible Charges)'
+    ];
+    
+    // Verify all required columns exist
+    const missingColumns = requiredFields.filter(field => !headers.includes(field));
+    if (missingColumns.length > 0) {
+        throw new Error(`Required columns not found in sheet: ${missingColumns.join(', ')}`);
+    }
+    
+    // Get column indices for all fields
+    const fieldIndices = {
+        challanNo: headers.indexOf('Challan No'),
+        invoiceNo: headers.indexOf('Invoice Number'),
+        challanDate: headers.indexOf('Challan Date'),
+        transporterName: headers.indexOf('Transporter Name'),
+        totalChallanAmount: headers.indexOf('Total Challan Amount (Not Incl TDS Non Deductible Charges)'),
+        comments: headers.indexOf('Comments') // Optional field
+    };
+
+    const [startChallan, endChallan] = range.split('-').map(Number);
+    
+    // Object to store missing field information
+    const missingFieldsInfo = [];
+    
+    // Collect relevant data from each row
+    const challanData = [];
+    data.slice(1).forEach((row, rowIndex) => {
+        const challanNo = Number(row[fieldIndices.challanNo]);
+        if (challanNo >= startChallan && challanNo <= endChallan) {
+            const transporterName = row[fieldIndices.transporterName];
+            
+            // Skip Nimbus Logistics
+            if (transporterName === "Nimbus Logistics") {
+                return;
+            }
+
+            // Check for missing or invalid data
+            const missingFields = [];
+            
+            // Check Challan No
+            if (!challanNo || isNaN(challanNo)) {
+                missingFields.push('Challan No');
+            }
+            
+            // Check Invoice Number
+            if (!row[fieldIndices.invoiceNo]) {
+                missingFields.push('Invoice Number');
+            }
+            
+            // Check Challan Date
+            const challanDate = row[fieldIndices.challanDate];
+            if (!challanDate || !(challanDate instanceof Date) || isNaN(challanDate.getTime())) {
+                missingFields.push('Challan Date');
+            }
+            
+            // Check Transporter Name
+            if (!transporterName || transporterName.trim() === '') {
+                missingFields.push('Transporter Name');
+            }
+            
+            // Check Total Challan Amount
+            const amount = row[fieldIndices.totalChallanAmount];
+            if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+                missingFields.push('Total Challan Amount (Not Incl TDS Non Deductible Charges)');
+            }
+
+            // If any required fields are missing, add to missing fields info
+            if (missingFields.length > 0) {
+                missingFieldsInfo.push({
+                    challanNo: challanNo || `Row ${rowIndex + 2}`,
+                    missingFields: missingFields
+                });
+                return; // Skip this row
+            }
+
+            // If all required fields are present, add to challanData
+            challanData.push({
+                challanNo: challanNo,
+                invoiceNo: row[fieldIndices.invoiceNo],
+                challanDate: challanDate,
+                transporterName: transporterName,
+                totalChallanAmt: Number(row[fieldIndices.totalChallanAmount]),
+                comments: fieldIndices.comments !== -1 ? (row[fieldIndices.comments] || '') : ''
+            });
+        }
+    });
+    
+    // If there are missing fields, throw an error with detailed information
+    if (missingFieldsInfo.length > 0) {
+        let errorMessage = 'Missing or invalid data found:\n\n';
+        missingFieldsInfo.forEach(info => {
+            errorMessage += `Challan ${info.challanNo}:\n`;
+            errorMessage += `  Missing/Invalid fields: ${info.missingFields.join(', ')}\n`;
+        });
+        throw new Error(errorMessage);
+    }
+    
+    return challanData;
   }
   

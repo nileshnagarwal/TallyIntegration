@@ -1,0 +1,11 @@
+# Ignore XML files
+*.xml
+
+# Ignore PDF files
+*.pdf
+
+# Ignore XLSX files
+*.xlsx
+
+# Ignore CSV files
+*.csv
