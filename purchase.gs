@@ -1,19 +1,3 @@
-/****************************************************
- * MENU & ENTRY POINTS
- ****************************************************/
-
-/**
- * onOpen() adds a custom menu to your spreadsheet.
- * The user can click these menu items to run the scripts.
- */
-function onOpen() {
-    SpreadsheetApp.getUi()
-      .createMenu("Tally Integration")
-      .addItem("Generate Ledger & Purchase XML...", "promptForChallanRange")
-      .addItem("Verify Ledgers...", "verifyLedgersOnly")
-      .addToUi();
-  }
-  
   /**
    * Prompts the user for a range of rows (e.g., "2-10") from the "Challans" sheet,
    * then generates two XML files:
