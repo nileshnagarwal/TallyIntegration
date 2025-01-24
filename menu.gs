@@ -15,6 +15,10 @@ function onOpen() {
     menu.addSubMenu(ui.createMenu("Purchase")
         .addItem("Generate Ledger & Purchase XML...", "promptForChallanRange")
         .addItem("Verify Transporter Ledgers...", "verifyLedgersOnly"))
+
+    // Bank related menu items
+    menu.addSubMenu(ui.createMenu("Bank")
+        .addItem("Match Bank Entries to Ledgers...", "processBankEntries"))
     
     menu.addToUi();
 } 
