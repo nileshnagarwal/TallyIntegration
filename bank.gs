@@ -5,8 +5,6 @@
  
 function processBankEntries() {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // Get required sheets
     const bankSheet = ss.getSheetByName("Bank");
     const challansSheet = ss.getSheetByName("Challans");
     const ledgersSheet = ss.getSheetByName("Ledgers");
@@ -15,69 +13,244 @@ function processBankEntries() {
         throw new Error("Required sheets not found!");
     }
 
-    // Get bank data
+    // Get data from sheets
     const bankData = bankSheet.getDataRange().getValues();
     const bankHeaders = bankData[0];
-
+    
     // Get column indices
+    const dateIndex = bankHeaders.indexOf("Date");
     const narrationIndex = bankHeaders.indexOf("Narration");
-    const matchingLedgerIndex = bankHeaders.indexOf("Matching Ledger");
-    const confidenceIndex = bankHeaders.indexOf("Confidence");
-
-    // Add columns if they don't exist
-    if (matchingLedgerIndex === -1) {
-        bankSheet.getRange(1, bankHeaders.length + 1).setValue("Matching Ledger");
-        bankHeaders.push("Matching Ledger");
-    }
-    if (confidenceIndex === -1) {
-        bankSheet.getRange(1, bankHeaders.length + 1).setValue("Confidence");
-        bankHeaders.push("Confidence");
+    const debitIndex = bankHeaders.indexOf("Debit");
+    const creditIndex = bankHeaders.indexOf("Credit");
+    const correctLedgerIndex = bankHeaders.indexOf("Correct Ledger Names");
+    
+    if (correctLedgerIndex === -1) {
+        throw new Error("Required column 'Correct Ledger Names' not found!");
     }
 
-    // Get ledgers list and ensure they're strings
-    const ledgers = ledgersSheet.getRange("A:A").getValues()
-        .flat()
-        .filter(ledger => ledger !== "" && ledger !== "Ledger Name")
-        .map(ledger => String(ledger).trim());
-
-    // Process each bank entry
-    const results = bankData.slice(1).map(row => {
-        const narration = String(row[narrationIndex] || "");
+    // Process entries and prepare for export
+    const processedEntries = bankData.slice(1).map(row => {
+        const date = row[dateIndex];
+        const narration = row[narrationIndex];
+        const debit = parseFloat(String(row[debitIndex]).replace(/,/g, '')) || 0;
+        const credit = parseFloat(String(row[creditIndex]).replace(/,/g, '')) || 0;
+        const correctLedger = row[correctLedgerIndex];
         
-        if (!narration) {
-            return ["", ""];
-        }
+        // Skip if no transaction amount or no matched ledger
+        if ((!debit && !credit) || !correctLedger) return null;
+        
+        // Determine if it's a payment or receipt
+        const isPayment = debit > 0;
+        const amount = isPayment ? debit : credit;
+        const amountWithSign = isPayment ? amount : -amount;
+        
+        // Extract FM numbers for bill allocation
+        const fmNumbers = extractFMNumbers(narration);
+        
+        return {
+            date: formatDate(date),
+            voucherType: isPayment ? "Payment" : "Receipt",
+            narration: narration,
+            ledger1: "IDFC Bank",
+            ledger2: correctLedger,
+            amountWithSign: amountWithSign,
+            billAllocations: fmNumbers.map(fm => ({
+                reference: fm,
+                amount: amount / fmNumbers.length
+            })),
+            allocationInLedger: 2
+        };
+    }).filter(entry => entry !== null);
+    
+    // Generate XML
+    const xmlContent = generateTallyXML(processedEntries);
+    
+    // Save XML content to file in Google Drive
+    saveXMLToFile(xmlContent);
+}
 
-        // 1. Try FM number matching
-        const fmMatch = matchFMNumber(narration, challansSheet);
-        if (fmMatch.success) {
-            // Find matching ledger with "LH Payable" suffix
-            const transporterLedger = ledgers.find(ledger => 
-                ledger.includes(fmMatch.transporterName) && ledger.endsWith("LH Payable")
-            );
-            
-            if (transporterLedger) {
-                return [transporterLedger, "High (FM Match)"];
-            }
-            return ["", "Low (No Match)"]; // No matching ledger found
-        }
+function generateTallyXML(entries) {
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<ENVELOPE>\n';
+    xml += '  <HEADER>\n';
+    xml += '    <TALLYREQUEST>Import Data</TALLYREQUEST>\n';
+    xml += '  </HEADER>\n';
+    xml += '  <BODY>\n';
+    xml += '    <IMPORTDATA>\n';
+    xml += '      <REQUESTDESC>\n';
+    xml += '        <REPORTNAME>Vouchers</REPORTNAME>\n';
+    xml += '        <STATICVARIABLES>\n';
+    xml += '          <SVCURRENTCOMPANY>Nimbus Logistics 2020-21</SVCURRENTCOMPANY>\n';
+    xml += '        </STATICVARIABLES>\n';
+    xml += '      </REQUESTDESC>\n';
+    xml += '      <REQUESTDATA>\n';
 
-        // 2. Try fuzzy matching with ledgers
-        const ledgerMatch = findBestLedgerMatch(narration, ledgers);
-        if (ledgerMatch.confidence > 0.8) {
-            return [ledgerMatch.ledgerName, `High (${Math.round(ledgerMatch.confidence * 100)}% Match)`];
-        }
-
-        return ["", "Low (No Match)"];
+    // Generate vouchers for each entry
+    entries.forEach(entry => {
+        xml += generateVoucherXML(entry);
     });
 
-    // Update the bank sheet with results
-    if (results.length > 0) {
-        const matchingLedgerCol = matchingLedgerIndex === -1 ? bankHeaders.length - 1 : matchingLedgerIndex;
-        const confidenceCol = confidenceIndex === -1 ? bankHeaders.length : confidenceIndex;
+    xml += '      </REQUESTDATA>\n';
+    xml += '    </IMPORTDATA>\n';
+    xml += '  </BODY>\n';
+    xml += '</ENVELOPE>';
+
+    return xml;
+}
+
+function generateVoucherXML(entry) {
+    let xml = '        <TALLYMESSAGE xmlns:UDF="TallyUDF">\n';
+    xml += `          <VOUCHER ACTION="Create" VCHTYPE="${entry.voucherType}">\n`;
+    xml += `            <VOUCHERTYPENAME>${entry.voucherType}</VOUCHERTYPENAME>\n`;
+    xml += `            <DATE>${entry.date}</DATE>\n`;
+    xml += '            <REFERENCE></REFERENCE>\n';
+    xml += `            <NARRATION>${escapeXml(entry.narration)}</NARRATION>\n`;
+    xml += '            <GUID></GUID>\n';
+    xml += '            <ALTERID></ALTERID>\n';
+
+    // First ledger entry (n=1)
+    xml += '            <ALLLEDGERENTRIES.LIST>\n';
+    xml += '              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>\n';
+    xml += '              <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>\n';
+    
+    if (entry.amountWithSign < 0) {
+        // Receipt: Bank is debited
+        xml += `              <LEDGERNAME>${escapeXml(entry.ledger1)}</LEDGERNAME>\n`;
+        xml += `              <AMOUNT>${entry.amountWithSign}</AMOUNT>\n`;
+    } else {
+        // Payment: Contra account is credited
+        xml += `              <LEDGERNAME>${escapeXml(entry.ledger2)}</LEDGERNAME>\n`;
+        xml += `              <AMOUNT>-${entry.amountWithSign}</AMOUNT>\n`;
         
-        bankSheet.getRange(2, matchingLedgerCol + 1, results.length, 2).setValues(results);
+        // Add bill allocations for payments
+        if (entry.billAllocations.length > 0) {
+            entry.billAllocations.forEach(bill => {
+                xml += '              <BILLALLOCATIONS.LIST>\n';
+                xml += `                <NAME>${bill.reference}</NAME>\n`;
+                xml += '                <BILLTYPE>Advance</BILLTYPE>\n';
+                xml += `                <AMOUNT>-${bill.amount}</AMOUNT>\n`;
+                xml += '              </BILLALLOCATIONS.LIST>\n';
+            });
+        }
     }
+    xml += '            </ALLLEDGERENTRIES.LIST>\n';
+
+    // Second ledger entry (n=2)
+    xml += '            <ALLLEDGERENTRIES.LIST>\n';
+    xml += '              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>\n';
+    xml += '              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n';
+    
+    if (entry.amountWithSign < 0) {
+        // Receipt: Contra account is credited
+        xml += `              <LEDGERNAME>${escapeXml(entry.ledger2)}</LEDGERNAME>\n`;
+        xml += `              <AMOUNT>${Math.abs(entry.amountWithSign)}</AMOUNT>\n`;
+    } else {
+        // Payment: Bank is debited
+        xml += `              <LEDGERNAME>${escapeXml(entry.ledger1)}</LEDGERNAME>\n`;
+        xml += `              <AMOUNT>${entry.amountWithSign}</AMOUNT>\n`;
+    }
+    xml += '            </ALLLEDGERENTRIES.LIST>\n';
+
+    xml += '          </VOUCHER>\n';
+    xml += '        </TALLYMESSAGE>\n';
+    return xml;
+}
+
+function generateLedgerEntryXML({ ledgerName, amount, isDeemedPositive, isFirst, entry }) {
+    let xml = '            <ALLLEDGERENTRIES.LIST>\n';
+    xml += '              <REMOVEZEROENTRIES>No</REMOVEZEROENTRIES>\n';
+    xml += `              <ISDEEMEDPOSITIVE>${isDeemedPositive}</ISDEEMEDPOSITIVE>\n`;
+    xml += `              <LEDGERNAME>${escapeXml(ledgerName)}</LEDGERNAME>\n`;
+    
+    // Handle amount based on entry type and position
+    const displayAmount = isFirst ? 
+        (amount < 0 ? amount : `-${amount}`) : 
+        (amount < 0 ? Math.abs(amount) : amount);
+    
+    xml += `              <AMOUNT>${displayAmount}</AMOUNT>\n`;
+
+    // Add bill allocations if this is the ledger that needs them
+    if (entry.allocationInLedger === (isFirst ? 1 : 2) && entry.billAllocations.length > 0) {
+        entry.billAllocations.forEach(bill => {
+            xml += generateBillAllocationXML(bill, amount < 0);
+        });
+    }
+
+    xml += '            </ALLLEDGERENTRIES.LIST>\n';
+    return xml;
+}
+
+function generateBillAllocationXML(bill, isReceipt) {
+    let xml = '              <BILLALLOCATIONS.LIST>\n';
+    xml += `                <NAME>${bill.reference}</NAME>\n`;
+    xml += '                <BILLTYPE>Advance</BILLTYPE>\n';
+    const billAmount = isReceipt ? bill.amount : `-${bill.amount}`;
+    xml += `                <AMOUNT>${billAmount}</AMOUNT>\n`;
+    xml += '              </BILLALLOCATIONS.LIST>\n';
+    return xml;
+}
+
+function escapeXml(unsafe) {
+    return unsafe
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function saveXMLToFile(xmlContent) {
+    try {
+        const fileName = `bank_export_${new Date().toISOString().split('T')[0]}.xml`;
+        
+        // Create blob with XML content
+        const blob = Utilities.newBlob(xmlContent, 'text/xml', fileName);
+        
+        // Get or create folder
+        let folder;
+        try {
+            folder = DriveApp.getFoldersByName('Bank Exports').next();
+        } catch (e) {
+            folder = DriveApp.createFolder('Bank Exports');
+        }
+        
+        // Create file
+        const file = folder.createFile(blob);
+        Logger.log(`XML file created: ${file.getUrl()}`);
+        
+        // Show success message to user
+        SpreadsheetApp.getActiveSpreadsheet().toast(
+            `XML file created successfully: ${fileName}`,
+            'Export Complete'
+        );
+        
+        return file.getUrl();
+    } catch (error) {
+        Logger.log(`Error saving XML file: ${error.toString()}`);
+        SpreadsheetApp.getActiveSpreadsheet().toast(
+            `Error creating XML file: ${error.toString()}`,
+            'Export Error',
+            10
+        );
+        throw error;
+    }
+}
+
+// Helper functions from previous implementation remain the same
+function extractFMNumbers(narration) {
+    const fmPattern = /FM[- ]?(\d+)/gi;
+    const matches = [];
+    let match;
+    
+    while ((match = fmPattern.exec(narration)) !== null) {
+        matches.push(match[1]);
+    }
+    
+    return matches;
+}
+
+function formatDate(date) {
+    return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyyMMdd");
 }
 
 function matchFMNumber(narration, challansSheet) {
@@ -242,5 +415,76 @@ function createCommonPatternsSheet() {
         
         patternsSheet.getRange(1, 1, headers.length, headers[0].length).setValues(headers);
         patternsSheet.getRange("1:1").setFontWeight("bold");
+    }
+}
+
+function processBankLedgerMatches() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const bankSheet = ss.getSheetByName("Bank");
+    const challansSheet = ss.getSheetByName("Challans");
+    const ledgersSheet = ss.getSheetByName("Ledgers");
+    
+    if (!bankSheet || !challansSheet || !ledgersSheet) {
+        throw new Error("Required sheets not found!");
+    }
+
+    // Get bank data
+    const bankData = bankSheet.getDataRange().getValues();
+    const bankHeaders = bankData[0];
+
+    // Get column indices
+    const narrationIndex = bankHeaders.indexOf("Narration");
+    const matchingLedgerIndex = bankHeaders.indexOf("Matching Ledger");
+    const confidenceIndex = bankHeaders.indexOf("Confidence");
+
+    // Add columns if they don't exist
+    let lastColumn = bankHeaders.length;
+    if (matchingLedgerIndex === -1) {
+        bankSheet.getRange(1, lastColumn + 1).setValue("Matching Ledger");
+        lastColumn++;
+    }
+    if (confidenceIndex === -1) {
+        bankSheet.getRange(1, lastColumn + 1).setValue("Confidence");
+        lastColumn++;
+    }
+
+    // Get ledgers data
+    const ledgers = ledgersSheet.getDataRange()
+        .getValues()
+        .slice(1) // Remove header
+        .map(row => row[0])
+        .filter(ledger => ledger); // Remove empty rows
+
+    // Process each row and prepare results
+    const results = bankData.slice(1).map(row => {
+        const narration = String(row[narrationIndex] || "");
+        
+        // First try FM number matching
+        const fmMatch = matchFMNumber(narration, challansSheet);
+        if (fmMatch.success) {
+            const transporterLedger = ledgers.find(ledger => 
+                ledger.includes(fmMatch.transporterName) && ledger.endsWith("LH Payable")
+            );
+            
+            if (transporterLedger) {
+                return [transporterLedger, "High (FM Match)"];
+            }
+        }
+
+        // Try fuzzy matching with ledgers
+        const ledgerMatch = findBestLedgerMatch(narration, ledgers);
+        if (ledgerMatch.confidence > 0.8) {
+            return [ledgerMatch.ledgerName, `High (${Math.round(ledgerMatch.confidence * 100)}% Match)`];
+        }
+
+        return ["", "Low (No Match)"];
+    });
+
+    // Update the bank sheet with results
+    if (results.length > 0) {
+        const matchingLedgerCol = matchingLedgerIndex === -1 ? bankHeaders.length + 1 : matchingLedgerIndex + 1;
+        const confidenceCol = confidenceIndex === -1 ? bankHeaders.length + 2 : confidenceIndex + 1;
+        
+        bankSheet.getRange(2, matchingLedgerCol, results.length, 2).setValues(results);
     }
 } 
