@@ -1,37 +1,52 @@
 function showDatePrompt() {
-  var ui = SpreadsheetApp.getUi();
+    var ui = SpreadsheetApp.getUi();
+    
+    // Prompt for filing period (MMYYYY)
+    var fpResponse = ui.prompt(
+      'Enter the Filing Period (MMYYYY)', 
+      'Example: 092024 for September 2024', 
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (fpResponse.getSelectedButton() == ui.Button.CANCEL) return;
+    var fp = fpResponse.getResponseText();
   
-  var startResponse = ui.prompt('Enter the start date for filtering invoices', 'Please use the format YYYY-MM-DD', ui.ButtonSet.OK_CANCEL);
-  if (startResponse.getSelectedButton() == ui.Button.CANCEL) {
-    return;
+    // Prompt for start date
+    var startResponse = ui.prompt(
+      'Enter the start date for filtering invoices', 
+      'Please use the format YYYY-MM-DD', 
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (startResponse.getSelectedButton() == ui.Button.CANCEL) return;
+    var startDate = new Date(startResponse.getResponseText());
+  
+    // Prompt for end date
+    var endResponse = ui.prompt(
+      'Enter the end date for filtering invoices', 
+      'Please use the format YYYY-MM-DD', 
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (endResponse.getSelectedButton() == ui.Button.CANCEL) return;
+    var endDate = new Date(endResponse.getResponseText());
+  
+    // Pass all values to the converter function
+    convertSheetToGSTR1JSON(startDate, endDate, fp);
   }
-  var startDate = new Date(startResponse.getResponseText());
-
-  var endResponse = ui.prompt('Enter the end date for filtering invoices', 'Please use the format YYYY-MM-DD', ui.ButtonSet.OK_CANCEL);
-  if (endResponse.getSelectedButton() == ui.Button.CANCEL) {
-    return;
-  }
-  var endDate = new Date(endResponse.getResponseText());
-
-  convertSheetToGSTR1JSON(startDate, endDate);
-}
-
-function convertSheetToGSTR1JSON(startDate, endDate) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var data = sheet.getDataRange().getValues();
   
-  var gstin = "27AJKPA4618F1ZG";
-  var fp = "092024";  
-  var gt = 11981565.00;  
-  var cur_gt = 7244065.00;  
-  
-  var jsonData = {
-    gstin: gstin,
-    fp: fp,
-    gt: gt,
-    cur_gt: cur_gt,
-    b2b: []
-  };
+  function convertSheetToGSTR1JSON(startDate, endDate, fp) {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    var data = sheet.getDataRange().getValues();
+    
+    var gstin = "27AJKPA4618F1ZG";
+    var gt = 11981565.00;  
+    var cur_gt = 7244065.00;  
+    
+    var jsonData = {
+      gstin: gstin,
+      fp: fp,  // Use the user-provided fp
+      gt: gt,
+      cur_gt: cur_gt,
+      b2b: []
+    };
   
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
