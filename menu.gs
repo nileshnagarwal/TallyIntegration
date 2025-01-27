@@ -4,21 +4,22 @@
  */
 function onOpen() {
     const ui = SpreadsheetApp.getUi();
-    const menu = ui.createMenu("Tally Integration");
+    const tally_menu = ui.createMenu("Tally Integration");
     
     // Sales related menu items
-    menu.addSubMenu(ui.createMenu("Sales")
+    tally_menu.addSubMenu(ui.createMenu("Sales")
         .addItem("Generate Sales XML...", "promptForBillRange")
         .addItem("Verify Client Ledgers...", "verifyClientLedgersOnly"))
     
     // Purchase related menu items
-    menu.addSubMenu(ui.createMenu("Purchase")
+    tally_menu.addSubMenu(ui.createMenu("Purchase")
         .addItem("Generate Ledger & Purchase XML...", "promptForChallanRange")
         .addItem("Verify Transporter Ledgers...", "verifyLedgersOnly"))
-
-    // Bank related menu items
-    menu.addSubMenu(ui.createMenu("Bank")
-        .addItem("Match Bank Entries to Ledgers...", "processBankEntries"))
     
-    menu.addToUi();
+    tally_menu.addToUi();
+
+    const gst_menu = ui.createMenu('GST Tools');
+    
+    gst_menu.addItem('Convert to GSTR-1 JSON', 'showDatePrompt');
+    gst_menu.addToUi();
 } 
