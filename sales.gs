@@ -107,6 +107,7 @@ function getBillDataForRange(range) {
         invoiceDate: headers.indexOf('Invoice Date'),
         clientName: headers.indexOf('Client Name'),
         totalAmount: headers.indexOf('Total Bill Amount (Incl GST)'),
+        totalExclGST: headers.indexOf('Total Bill Amount (Excl GST)'),
         gstAmount: headers.indexOf('GST (Payable by Us)'),
         fromTo: headers.indexOf('From/To'),
         vehicleNumber: headers.indexOf('Vehicle Number'),
@@ -148,6 +149,12 @@ function getBillDataForRange(range) {
                 missingFields.push('Total Bill Amount (Incl GST)');
             }
 
+            // Check Total Excl GST
+            const totalExclGST = cleanAmount(row[fieldIndices.totalExclGST]);
+            if (!totalExclGST || isNaN(totalExclGST) || totalExclGST <= 0) {
+                missingFields.push('Total Bill Amount (Excl GST)');
+            }
+
             // If any required fields are missing, add to missing fields info
             if (missingFields.length > 0) {
                 missingFieldsInfo.push({
@@ -163,6 +170,7 @@ function getBillDataForRange(range) {
                 invoiceDate: invoiceDate,
                 clientName: clientName.trim(),
                 totalAmount: totalAmount,
+                totalExclGST: totalExclGST,
                 gstAmount: fieldIndices.gstAmount !== -1 ? cleanAmount(row[fieldIndices.gstAmount]) : null,
                 fromTo: row[fieldIndices.fromTo] || '',
                 vehicleNumber: row[fieldIndices.vehicleNumber] || '',
@@ -280,28 +288,23 @@ function generateSalesXml(billData) {
         const clientName = bill.clientName;
         const invoiceNo = bill.invoiceNo;
         const totalAmount = bill.totalAmount;
-        const gstAmount = bill.gstAmount;
         
-        // Calculate amounts based on GST presence
-        let freightForwardingAmount;
-        let clientAmount = -totalAmount;  // Client amount is always negative of total
+        // Get all amounts first
+        const totalInclGST = bill.totalAmount;
+        const totalExclGST = bill.totalExclGST;
+        const gstPayableByUs = bill.gstAmount;
 
-        if (gstAmount) {
-            // FCM case - GST payable by us
-            freightForwardingAmount = totalAmount - gstAmount;
-            
-            // Validate: freightForwarding + gst = -clientAmount
-            if (Math.abs((freightForwardingAmount + gstAmount + clientAmount)) > 0.01) {
-                throw new Error(`Freight Mismatch Error for Invoice No ${invoiceNo}`);
-            }
-        } else {
-            // RCM case - GST not payable by us
-            freightForwardingAmount = totalAmount;
-            
-            // Validate: freightForwarding = -clientAmount
-            if (Math.abs(freightForwardingAmount + clientAmount) > 0.01) {
-                throw new Error(`Freight Mismatch Error for Invoice No ${invoiceNo}`);
-            }
+        // FCM Case (We pay GST)
+        if (gstPayableByUs > 0) {
+            freightForwardingAmount = totalExclGST;
+            clientAmount = -totalInclGST;  // Client pays (Freight + GST)
+            gstAmount = gstPayableByUs;
+        } 
+        // RCM Case (Client pays GST directly)
+        else {
+            freightForwardingAmount = totalExclGST;
+            clientAmount = -freightForwardingAmount;  // Client pays only freight
+            gstAmount = 0;
         }
 
         const narration = `${bill.fromTo}. ${bill.vehicleNumber}. FM${bill.challanNo}` + 

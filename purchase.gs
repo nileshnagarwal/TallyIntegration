@@ -275,18 +275,21 @@
     xmlParts.push('      <REQUESTDATA>');
   
     challanData.forEach(function(obj, idx) {
-      // Format the date in YYYYMMDD as your python code does
+      // Format the date in YYYYMMDD
       var dateStr = formatTallyDate(obj.challanDate); 
       var transporter = obj.transporterName || 'Unknown Transporter';
-      var challanNo = obj.challanNo || '';
+      
+      // Get challan number as string (no padding)
+      const challanNo = obj.challanNo ? obj.challanNo.toString() : '';
+  
       var totalAmt = obj.totalChallanAmt || 0;
-      var comments = obj.comments || '';
+      var narration = obj.narration || '';
   
       xmlParts.push('        <TALLYMESSAGE xmlns:UDF="TallyUDF">');
       xmlParts.push('          <VOUCHER ACTION="Create" VCHTYPE="Purchase">');
       xmlParts.push('            <VOUCHERTYPENAME>Purchase</VOUCHERTYPENAME>');
       xmlParts.push('            <DATE>' + dateStr + '</DATE>');
-      xmlParts.push('            <NARRATION>' + escXml(comments) + '</NARRATION>');
+      xmlParts.push('            <NARRATION>' + escXml(narration) + '</NARRATION>');
       xmlParts.push('            <VOUCHERNUMBER>' + escXml(challanNo) + '</VOUCHERNUMBER>');
       xmlParts.push('            <GUID></GUID>');    // or leave blank / generate if needed
       xmlParts.push('            <ALTERID></ALTERID>');
@@ -577,7 +580,9 @@
         challanDate: headers.indexOf('Challan Date'),
         transporterName: headers.indexOf('Transporter Name'),
         totalChallanAmount: headers.indexOf('Total Challan Amount (Not Incl TDS Non Deductible Charges)'),
-        comments: headers.indexOf('Comments') // Optional field
+        narration: headers.indexOf('Narration'),
+        challanFreight: headers.indexOf('Challan Freight'),
+        vehicleNumber: headers.indexOf('Vehicle Number')
     };
 
     const [startChallan, endChallan] = range.split('-').map(Number);
@@ -643,7 +648,9 @@
                 challanDate: challanDate,
                 transporterName: transporterName,
                 totalChallanAmt: Number(row[fieldIndices.totalChallanAmount]),
-                comments: fieldIndices.comments !== -1 ? (row[fieldIndices.comments] || '') : ''
+                narration: row[fieldIndices.narration],
+                vehicleNumber: row[fieldIndices.vehicleNumber],
+                challanFreight: row[fieldIndices.challanFreight]
             });
         }
     });
@@ -660,4 +667,3 @@
     
     return challanData;
   }
-  
