@@ -58,11 +58,12 @@ function showDatePrompt() {
     var gstAmount = parseFloat(row[getColumnIndexByName("GST Amount", data[0])]).toFixed(2);
     var serviceTaxPayableBy = row[getColumnIndexByName("Service Tax Payable by", data[0])];
     var gstr1Applicable = row[getColumnIndexByName("GSTR1 Applicable?", data[0])];
+    var gstRateString = row[getColumnIndexByName("GST Rate", data[0])];
     
     if (invoiceDate >= startDate && invoiceDate <= endDate) {
       if (gstr1Applicable == "Y") {
         var rchrg = (serviceTaxPayableBy == "Carrier") ? "N" : "Y";  
-        var gstRate = (gstAmount / totalAmount) * 100;
+        var gstRate = parseFloat(gstRateString.replace('%', ''));
         var isIntraState = clientGSTIN.substring(0, 2) == "27";  
         
         var igst = isIntraState ? 0 : parseFloat(gstAmount).toFixed(2);
@@ -81,7 +82,7 @@ function showDatePrompt() {
             "itms": [{
               "num": 1,  
               "itm_det": {
-                "rt": parseFloat(gstRate),  
+                "rt": gstRate,
                 "txval": parseFloat(totalAmount),  
                 "iamt": parseFloat(igst),  
                 "camt": parseFloat(cgst),  
