@@ -13,6 +13,9 @@ function processBankEntries() {
         throw new Error("Required sheets not found!");
     }
 
+    // Array to collect log messages for the popup
+    const logMessages = [];
+
     // Get data from sheets
     const bankData = bankSheet.getDataRange().getValues();
     const bankHeaders = bankData[0];
@@ -29,8 +32,30 @@ function processBankEntries() {
     }
 
     // Process entries and prepare for export
-    const processedEntries = bankData.slice(1).map(row => {
-        const date = row[dateIndex];
+    const processedEntries = bankData.slice(1).map((row, index) => {
+        let dateValue = row[dateIndex];
+        const rowNumber = index + 2; // Sheet row number (1-based header + 1-based index)
+
+        // Ensure dateValue is a Date object
+        if (!(dateValue instanceof Date)) {
+            // Attempt to parse it if it's a string or number
+            try {
+                 dateValue = new Date(dateValue);
+            } catch (e) {
+                 const errorMsg = `Row ${rowNumber}: Invalid date format - '${row[dateIndex]}'`;
+                 Logger.log(errorMsg + ` | Row data: ${row}`);
+                 logMessages.push(errorMsg);
+                 return null; // Skip row if date cannot be parsed
+            }
+        }
+        // Check if the conversion resulted in a valid date
+        if (isNaN(dateValue.getTime())) {
+             const errorMsg = `Row ${rowNumber}: Invalid date value - '${row[dateIndex]}'`;
+             Logger.log(errorMsg + ` | Row data: ${row}`);
+             logMessages.push(errorMsg);
+             return null; // Skip row if date is invalid
+        }
+
         const narration = row[narrationIndex];
         const debit = parseFloat(String(row[debitIndex]).replace(/,/g, '')) || 0;
         const credit = parseFloat(String(row[creditIndex]).replace(/,/g, '')) || 0;
@@ -48,7 +73,7 @@ function processBankEntries() {
         const fmNumbers = extractFMNumbers(narration);
         
         return {
-            date: formatDate(date),
+            date: formatDate(dateValue),
             voucherType: isPayment ? "Payment" : "Receipt",
             narration: narration,
             ledger1: "IDFC Bank",
@@ -66,7 +91,31 @@ function processBankEntries() {
     const xmlContent = generateTallyXML(processedEntries);
     
     // Save XML content to file in Google Drive
-    saveXMLToFile(xmlContent);
+    let fileUrl = null;
+    try {
+        fileUrl = saveXMLToFile(xmlContent);
+    } catch (e) {
+        // Error saving file is already handled by saveXMLToFile (logs + toast)
+        // We might want to add the error to our log popup as well
+        logMessages.push(`Error saving XML file: ${e.toString()}`);
+    }
+
+    // Display collected log messages in a popup if any exist
+    if (logMessages.length > 0) {
+        const ui = SpreadsheetApp.getUi();
+        let alertMessage = "Script finished with issues:\n\n";
+        // Limit the number of messages shown in the alert to avoid exceeding size limits
+        const messagesToShow = logMessages.slice(0, 20); 
+        alertMessage += messagesToShow.join("\n");
+        if (logMessages.length > 20) {
+            alertMessage += `\n\n... and ${logMessages.length - 20} more issues (check execution logs for details).`;
+        }
+        ui.alert("Processing Summary", alertMessage, ui.ButtonSet.OK);
+    } else if (fileUrl) {
+        // If no errors and file was saved, the toast from saveXMLToFile is sufficient.
+        // Optionally, add a success alert here if needed.
+        // SpreadsheetApp.getUi().alert("Processing Complete", "Script finished successfully. XML file saved.", SpreadsheetApp.getUi().ButtonSet.OK);
+    }
 }
 
 function generateTallyXML(entries) {
@@ -232,7 +281,8 @@ function saveXMLToFile(xmlContent) {
             'Export Error',
             10
         );
-        throw error;
+        // Re-throw the error so processBankEntries knows saving failed
+        throw error; 
     }
 }
 
